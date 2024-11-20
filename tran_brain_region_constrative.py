@@ -1,17 +1,3 @@
-# Copyright (c) Ramy Mounir.
-# 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-#     http://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import torch.nn as nn
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
@@ -183,15 +169,7 @@ def train(gpu, args):
 
     # === MODEL === #
     get_model = getattr(__import__("lib.arch.{}".format(args.arch), fromlist=["get_model"]), "get_model")
- 
-    model = get_model(args).cuda(args.gpu)
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model) # use if model contains batchnorm.
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-
-
-    #for 3d-unet:
-    get_model = getattr(__import__("lib.arch.{}".format(args.arch), fromlist=["get_model"]), "get_model")
-    model = get_model(test_config['model'])
+    model = get_model(args.__dict__['model'])
     # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) # model use group norm, which did not require sync.
     model = nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     
