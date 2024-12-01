@@ -1,0 +1,87 @@
+# learn dense 3d image embedding with V-net
+SYSTEM:
+  DEVICE: cuda
+  GPU_IDS: 0
+  NUM_GPUS: 1
+  NUM_CPUS: 2
+MODEL:
+  train_mode: True
+  INPUT_SIZE: [ 33, 33, 3 ]
+  OUTPUT_SIZE: [ 33, 33, 33]
+  ARCHITECTURE: unet_3d
+  BLOCK_TYPE: residual
+  FILTERS: [16,32,96 ]
+  ISOTROPY: [True,True,True]
+  # output dense featuremap of dimension 64 
+  IN_PLANES: 1
+  OUT_PLANES: 128 
+  NORM_MODE: 'gn'
+  TARGET_OPT: ["e"]
+  POOLING_LAYER: True 
+  LOSS_OPTION:
+    [[ "DiscriminativeLoss", "ConnectionLoss" ]]
+  LOSS_WEIGHT: [[ 0.2, 1.0 ]]
+  WEIGHT_OPT: [[ "0", "0" ]]
+  OUTPUT_ACT: [[ "none",  "none" ]]
+MONITOR:
+  ITERATION_NUM: [20, 200]
+LOSS:
+  n_views: 2
+  temperature: 0.07
+SOLVER:
+  LR_SCHEDULER_NAME: "MultiStepLR"
+  NAME: AdamW
+  ITERATION_RESTART: True
+  BASE_LR: 2e-04
+  STEPS: (30000, 60000)
+  ITERATION_SAVE: 200
+  ITERATION_TOTAL: 55000
+  ITERATION_VAL: 200
+  SAMPLES_PER_BATCH: 4 # PER GPU
+DATASET:
+  amount: 100   #total amount of training data
+  batch_per_gpu: 2
+  num_workers: 0
+  shuffle: True
+  raw_internal_path: "/home/confetti/data/mousebrainatlas/T11.ims.h5" 
+  label_internal_path: "/home/confetti/data/mousebrainatlas/new_t11/registered_atlas.tiff"
+  level: 0
+  channel: 3
+  zoom_factor: 6.25
+  input_size: [128,128,128]
+  IS_ISOTROPIC: True
+  RELABEL: False
+  SNEMI3D_DATSET: True
+  CONNECTOR_DATSET: True
+  OUTPUT_PATH: 'out' 
+  DO_MULTI_VOLUME: False
+INFERENCE:
+  OUTPUT_ACT: ["none"]
+  SAMPLES_PER_BATCH: 4 # per gpu
+  INPUT_PATH: /h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/positives/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D-examples.h5#/h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/negatives/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D-examples.h5
+  OUTPUT_PATH: /h3cstore_nt/JaneChen/SNEMI3D/image_feature_patch/connect-embed/train
+  IMAGE_NAME: /h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D.csv
+AUGMENTOR:
+  SMOOTH: False
+  MISSINGPARTS:
+    ENABLED: False
+  MISSINGSECTION:
+    ENABLED: False
+  CUTNOISE:
+    ENABLED: False
+  CUTBLUR:
+    ENABLED: False
+  ROTATE:
+    ENABLED: False
+  RESCALE:
+    ENABLED: False
+  FLIP:
+    ENABLED: True
+  ELASTIC:
+    ENABLED: False
+  GRAYSCALE:
+    ENABLED: True
+  MISALIGNMENT:
+    ENABLED: False
+  MOTIONBLUR:
+    ENABLED: False

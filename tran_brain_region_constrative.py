@@ -2,10 +2,12 @@ import torch.nn as nn
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
+import torch
 
 import argparse
 from lib.utils.file import bool_flag
 from lib.utils.distributed import init_dist_node, init_dist_gpu, get_shared_folder
+
 
 import submitit, random, sys
 from pathlib import Path
@@ -30,8 +32,8 @@ def parse_args():
                                             help='Start TensorBoard')
     parser.add_argument('-gpus', type=str, default="0",
                                             help='GPUs list, only works if not on slurm')
-    parser.add_argument('-cfg', type =str,
-                                            help='Configuration file')
+    parser.add_argument('-cfg', type =str,help='Configuration file',
+                        default='config/brain_region_unet.yaml')
 
     # === Dataset === #
     parser.add_argument('-dataset', type=str, default = 'random',
@@ -56,8 +58,7 @@ def parse_args():
                                             help='number of epochs')
     parser.add_argument('-save_every', type=int, default = 10,
                                             help='Save frequency')
-    parser.add_argument('-fp16', action='store_true',
-                                            help='Use mixed precision only with RTX, V100 and A100 GPUs')
+    parser.add_argument('-fp16', type=torch.dtype,default=torch.bfloat16, help='bfloat16 will be more numerical stable')
 
 
     # === Optimization === #
@@ -87,10 +88,12 @@ def parse_args():
 
     args = parser.parse_args()
 
+    # cmdline parameters will overwrite the CFG parameters
+
     # === Read CFG File === #
     if args.cfg:
         with open(args.cfg, 'r') as f:
-            import ruamel.yaml as yaml
+            import yaml
             yml = yaml.safe_load(f)
 
         # update values from cfg file only if not passed in cmdline
@@ -112,10 +115,13 @@ class SLURM_Trainer(object):
         train(None, self.args)
 
 
+from config import load_cfg
 def main():
 
     args = parse_args()
     args.port = random.randint(49152,65535)
+
+    cfg=load_cfg(args)
     
     if args.slurm:
 
@@ -145,37 +151,47 @@ def main():
 
     else:
         init_dist_node(args)
-        mp.spawn(train, args = (args,), nprocs = args.ngpus_per_node)
+        mp.spawn(train, args = (args,cfg), nprocs = args.ngpus_per_node)
 	
 
-def train(gpu, args):
+def train(gpu, args,cfg):
+
 
     # === SET ENV === #
     init_dist_gpu(gpu, args)
     
     # === DATA === #
-    get_dataset = getattr(__import__("lib.datasets.{}".format(args.dataset), fromlist=["get_dataset"]), "get_dataset")
+    # get_dataset = getattr(__import__("lib.datasets.{}".format(args.dataset), fromlist=["get_dataset"]), "get_dataset")
+    from lib.datasets.visor_3d_dataset import get_dataset
     dataset = get_dataset(args)
 
-    sampler = DistributedSampler(dataset, shuffle=args.shuffle, num_replicas = args.world_size, rank = args.rank, seed = 31)
+    sampler = DistributedSampler(dataset, shuffle=cfg.DATASET.shuffle, num_replicas = args.world_size, rank = args.rank, seed = 31)
     loader = DataLoader(dataset=dataset, 
                             sampler = sampler,
-                            batch_size=args.batch_per_gpu, 
-                            num_workers= args.workers,
+                            batch_size=cfg.DATASET.batch_per_gpu, 
+                            num_workers= cfg.DATASET.num_workers,
                             pin_memory = True,
                             drop_last = True
                             )
     print(f"Data loaded")
 
     # === MODEL === #
-    get_model = getattr(__import__("lib.arch.{}".format(args.arch), fromlist=["get_model"]), "get_model")
-    model = get_model(args.__dict__['model'])
-    # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) # model use group norm, which did not require sync.
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-    
+    from lib.arch.unet import build_unet_model
+    model = build_unet_model(cfg)
+    model=model.cuda(args.gpu)
+    model.train()
+    # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) #group_norm did not require to sync, group_norm is preferred when batch_size is small
+    model = nn.parallel.DistributedDataParallel(model, device_ids= [cfg.SYSTEM.GPU_IDS])
+
+
+    from torchsummary import summary
+    model.to('cuda')
+    summary(model,(1,128,128,128))
+
     # === LOSS === #
-    from lib.core.loss import get_loss
-    loss = get_loss(args).cuda(args.gpu)
+    from lib.core.contrastive_loss import get_loss
+    loss = get_loss(cfg).cuda(args.gpu)
+
 
     # === OPTIMIZER === #
     from lib.core.optimizer import get_optimizer

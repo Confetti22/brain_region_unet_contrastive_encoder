@@ -64,32 +64,22 @@ lr_scheduler:
 # data loaders configuration
 loaders:
   # class of the HDF5 dataset, currently StandardHDF5Dataset and LazyHDF5Dataset are supported.
-  dataset: StandardHDF5Dataset
+  # dataset: StandardHDF5Dataset
   # batch dimension; if number of GPUs is N > 1, then a batch_size of N * batch_size will automatically be taken for DataParallel
   batch_size: 1
-  # how many subprocesses to use for data loading
   num_workers: 4
-  # path to the raw data within the H5
-  raw_internal_path: raw
-  # path to the the label data within the H5
-  label_internal_path: random
-  # path to the pixel-wise weight map withing the H5 if present
-  weight_internal_path: null
-  # configuration of the train loader
+  raw_internal_path: "/home/confetti/data/mousebrainatlas/T11.ims.h5" 
+  label_internal_path: "/home/confetti/data/mousebrainatlas/new_t11/registered_atlas.tiff"
+  level: 0
+  channel: 3
+  zoom_factor: 6.25
+  input_size: [128,128,128]
+  
   train:
     # absolute paths to the training datasets; if a given path is a directory all H5 files ('*.h5', '*.hdf', '*.hdf5', '*.hd5')
     # inside this this directory will be included as well (non-recursively)
     file_paths:
         - "PATH_TO_TRAIN_SET"
-
-    # SliceBuilder configuration, i.e. how to iterate over the input volume patch-by-patch
-    slice_builder:
-      # SliceBuilder class
-      name: SliceBuilder
-      # train patch size given to the network (adapt to fit in your GPU mem, generally the bigger patch the better)
-      patch_shape: [128, 128, 128]
-      # train stride between patches
-      stride_shape: [32, 32, 32]
 
     # data transformations/augmentations
     transformer:

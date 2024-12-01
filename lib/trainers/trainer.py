@@ -31,7 +31,7 @@ class Trainer:
         self.model = model
         self.loss = loss
         self.optimizer = optimizer
-        self.fp16_scaler = torch.cuda.amp.GradScaler() if args.fp16 else None
+        self.fp16_scaler = torch.GradScaler('cuda') if args.fp16 else None
 
         # === TB writers === #
         if self.args.main:	
@@ -60,7 +60,7 @@ class Trainer:
             input_data, labels = input_data.cuda(non_blocking=True), labels.cuda(non_blocking=True)
 
             # === Forward pass === #
-            with torch.cuda.amp.autocast(self.args.fp16):
+            with torch.autocast('cuda',self.args.fp16):
                 preds = self.model(input_data)
                 loss = self.loss(preds, labels)
 
@@ -72,13 +72,14 @@ class Trainer:
             # === Backward pass === #
             self.model.zero_grad()
 
-            if self.args.fp16:
-                self.fp16_scaler.scale(loss).backward()
-                self.fp16_scaler.step(self.optimizer)
-                self.fp16_scaler.update()
-            else:
-                loss.backward()
-                self.optimizer.step()
+            # for mix precision backward propogation
+            # if self.args.fp16:
+            #     self.fp16_scaler.scale(loss).backward()
+            #     self.fp16_scaler.step(self.optimizer)
+            #     self.fp16_scaler.update()
+            
+            loss.backward()
+            self.optimizer.step()
 
 
             # === Logging === #

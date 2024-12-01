@@ -1,253 +1,362 @@
+from __future__ import print_function, division
+from typing import Optional, List
+
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .unet3d.buildingblocks import DoubleConv, ResNetBlock, ResNetBlockSE, \
-    create_decoders, create_encoders
-from .unet3d.utils import get_class, number_of_features_per_level
+from lib.arch.block import *
+from lib.arch.utils import model_init
 
 
-class AbstractUNet(nn.Module):
-    """
-    Base class for standard and residual UNet.
-
+class UNet3D(nn.Module):
+    """3D residual U-Net architecture. This design is flexible in handling both isotropic data and anisotropic data.
     Args:
-        in_channels (int): number of input channels
-        out_channels (int): number of output segmentation masks;
-            Note that the of out_channels might correspond to either
-            different semantic classes or to different binary segmentation mask.
-            It's up to the user of the class to interpret the out_channels and
-            use the proper loss criterion during training (i.e. CrossEntropyLoss (multi-class)
-            or BCEWithLogitsLoss (two-class) respectively)
-        f_maps (int, tuple): number of feature maps at each level of the encoder; if it's an integer the number
-            of feature maps is given by the geometric progression: f_maps ^ k, k=1,2,3,4
-        final_sigmoid (bool): if True apply element-wise nn.Sigmoid after the final 1x1 convolution,
-            otherwise apply nn.Softmax. In effect only if `self.training == False`, i.e. during validation/testing
-        basic_module: basic model for the encoder/decoder (DoubleConv, ResNetBlock, ....)
-        layer_order (string): determines the order of layers in `SingleConv` module.
-            E.g. 'crg' stands for GroupNorm3d+Conv3d+ReLU. See `SingleConv` for more info
-        num_groups (int): number of groups for the GroupNorm
-        num_levels (int): number of levels in the encoder/decoder path (applied only if f_maps is an int)
-            default: 4
-        is_segmentation (bool): if True and the model is in eval mode, Sigmoid/Softmax normalization is applied
-            after the final convolution; if False (regression problem) the normalization layer is skipped
-        conv_kernel_size (int or tuple): size of the convolving kernel in the basic_module
-        pool_kernel_size (int or tuple): the size of the window
-        conv_padding (int or tuple): add zero-padding added to all three sides of the input
-        conv_upscale (int): number of the convolution to upscale in encoder if DoubleConv, default: 2
-        upsample (str): algorithm used for decoder upsampling:
-            InterpolateUpsampling:   'nearest' | 'linear' | 'bilinear' | 'trilinear' | 'area'
-            TransposeConvUpsampling: 'deconv'
-            No upsampling:           None
-            Default: 'default' (chooses automatically)
-        dropout_prob (float or tuple): dropout probability, default: 0.1
-        is3d (bool): if True the model is 3D, otherwise 2D, default: True
+        block_type (str): the block type at each U-Net stage. Default: ``'residual'``
+        in_channel (int): number of input channels. Default: 1
+        out_channel (int): number of output channels. Default: 3
+        filters (List[int]): number of filters at each U-Net stage. Default: [28, 36, 48, 64, 80]
+        is_isotropic (bool): whether the whole model is isotropic. Default: False
+        isotropy (List[bool]): specify each U-Net stage is isotropic or anisotropic. All elements will
+            be `True` if :attr:`is_isotropic` is `True`. Default: [False, False, False, True, True]
+        pad_mode (str): one of ``'zeros'``, ``'reflect'``, ``'replicate'`` or ``'circular'``. Default: ``'replicate'``
+        act_mode (str): one of ``'relu'``, ``'leaky_relu'``, ``'elu'``, ``'gelu'``, 
+            ``'swish'``, ``'efficient_swish'`` or ``'none'``. Default: ``'relu'``
+        norm_mode (str): one of ``'bn'``, ``'sync_bn'`` ``'in'`` or ``'gn'``. Default: ``'bn'``
+        init_mode (str): one of ``'xavier'``, ``'kaiming'``, ``'selu'`` or ``'orthogonal'``. Default: ``'orthogonal'``
+        pooling (bool): downsample by max-pooling if `True` else using stride. Default: `False`
+        blurpool (bool): apply blurpool as in Zhang 2019 (https://arxiv.org/abs/1904.11486). Default: `False`
     """
 
-    def __init__(self, in_channels, out_channels, final_sigmoid, basic_module, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=4, is_segmentation=True, conv_kernel_size=3, pool_kernel_size=2,
-                 conv_padding=1, conv_upscale=2, upsample='default', dropout_prob=0.1, is3d=True):
-        super(AbstractUNet, self).__init__()
+    block_dict = {
+        'residual': BasicBlock3d,
+        'residual_pa': BasicBlock3dPA,
+        #se for squeeze and extration
+        'residual_se': BasicBlock3dSE,
+        'residual_se_pa': BasicBlock3dPASE,
+    }
 
-        if isinstance(f_maps, int):
-            f_maps = number_of_features_per_level(f_maps, num_levels=num_levels)
+    def __init__(self,
+                 block_type='residual',
+                 in_channel: int = 1,
+                 out_channel: int = 3,
+                 filters: List[int] = [28, 36, 48, 64, 80],
+                 is_isotropic: bool = False,
+                 isotropy: List[bool] = [False, False, False, True, True],
+                 pad_mode: str = 'replicate',
+                 act_mode: str = 'elu',
+                 norm_mode: str = 'bn',
+                 init_mode: str = 'orthogonal',
+                 pooling: bool = False,
+                 blurpool: bool = False,
+                 train_mode: bool = False,
+                 **kwargs):
+        super().__init__()
+        assert len(filters) == len(isotropy)
+        self.train_mode = train_mode
+        self.depth = len(filters)
+        if is_isotropic:
+            isotropy = [True] * self.depth
 
-        assert isinstance(f_maps, list) or isinstance(f_maps, tuple)
-        assert len(f_maps) > 1, "Required at least 2 levels in the U-Net"
-        if 'g' in layer_order:
-            assert num_groups is not None, "num_groups must be specified if GroupNorm is used"
+        block = self.block_dict[block_type]
 
-        # create encoder path
-        self.encoders = create_encoders(in_channels, f_maps, basic_module, conv_kernel_size,
-                                        conv_padding, conv_upscale, dropout_prob,
-                                        layer_order, num_groups, pool_kernel_size, is3d)
+        self.pooling, self.blurpool = pooling, blurpool
+        self.shared_kwargs = {
+            'pad_mode': pad_mode,
+            'act_mode': act_mode,
+            'norm_mode': norm_mode}
 
-        # create decoder path
-        self.decoders = create_decoders(f_maps, basic_module, conv_kernel_size, conv_padding,
-                                        layer_order, num_groups, upsample, dropout_prob,
-                                        is3d)
+        # input and output layers
+        kernel_size_io, padding_io = self._get_kernal_size(
+            is_isotropic, io_layer=True)
+        self.conv_in = conv3d_norm_act(in_channel, filters[0], kernel_size_io,
+                                       padding=padding_io, **self.shared_kwargs)
+        self.conv_out = conv3d_norm_act(filters[0], out_channel, kernel_size_io, bias=True,
+                                        padding=padding_io, pad_mode=pad_mode, act_mode='none', norm_mode='none')
 
-        # in the last layer a 1×1 convolution reduces the number of output channels to the number of labels
-        if is3d:
-            self.final_conv = nn.Conv3d(f_maps[0], out_channels, 1)
-        else:
-            self.final_conv = nn.Conv2d(f_maps[0], out_channels, 1)
+        # encoding path
+        self.down_layers = nn.ModuleList()
+        for i in range(self.depth):
+            kernel_size, padding = self._get_kernal_size(isotropy[i])
+            previous = max(0, i-1)
+            stride = self._get_stride(isotropy[i], previous, i)
+            layer = nn.Sequential(
+                self._make_pooling_layer(isotropy[i], previous, i),
+                conv3d_norm_act(filters[previous], filters[i], kernel_size,
+                                stride=stride, padding=padding, **self.shared_kwargs),
+                block(filters[i], filters[i], **self.shared_kwargs,isotropic=is_isotropic))
+            self.down_layers.append(layer)
+
+        # decoding path
+        self.up_layers = nn.ModuleList()
+        for j in range(1, self.depth):
+            kernel_size, padding = self._get_kernal_size(isotropy[j])
+            layer = nn.ModuleList([
+                conv3d_norm_act(filters[j], filters[j-1], kernel_size,
+                                padding=padding, **self.shared_kwargs),
+                block(filters[j-1], filters[j-1], **self.shared_kwargs,isotropic=is_isotropic)])
+            self.up_layers.append(layer)
         
-        #create projection layer
-        hidder_layer_channels=out_channels
-        hidden_layer=nn.Conv3d(in_channels=out_channels,out_channels=hidder_layer_channels,kernel_size=1,stride=1)
-        linear_layer=nn.Conv3d(in_channels=hidder_layer_channels,out_channels=out_channels,kernel_size=1,stride=1)
-        self.projection= nn.Sequential(hidden_layer, nn.ReLU(inplace=True), linear_layer)
+        projection_dim=64
+        self.projection=nn.Sequential(
+                nn.Conv3d(in_channels=out_channel,out_channels=projection_dim,kernel_size=1,stride=1),
+                nn.ReLU(inplace=False),
+                nn.Conv3d(in_channels=projection_dim,out_channels=projection_dim,kernel_size=1,stride=1),
+        )
 
-
-
-
-
-
+        # initialization
+        model_init(self, mode=init_mode)
 
     def forward(self, x):
-        # encoder part
-        encoders_features = []
-        for encoder in self.encoders:
-            x = encoder(x)
-            # reverse the encoder outputs to be aligned with the decoder
-            encoders_features.insert(0, x)
+        x = self.conv_in(x)
 
-        # remove the last encoder's output from the list
-        # !!remember: it's the 1st in the list
-        encoders_features = encoders_features[1:]
+        down_x = [None] * (self.depth-1)
+        for i in range(self.depth-1):
+            x = self.down_layers[i](x)
+            down_x[i] = x
 
-        # decoder part
-        for decoder, encoder_features in zip(self.decoders, encoders_features):
-            # pass the output from the corresponding encoder and the output
-            # of the previous decoder
-            x = decoder(encoder_features, x)
+        x = self.down_layers[-1](x)
 
-        x = self.final_conv(x)
+        for j in range(self.depth-1):
+            i = self.depth-2-j
+            x = self.up_layers[i][0](x)
+            x = self._upsample_add(x, down_x[i])
+            x = self.up_layers[i][1](x)
 
-        # Duing training, add a projection head, mapping the features into contrastive space
-        # Duing prediction, output features directly
-        if  self.training :
-            x = self.projection(x)
+        x = self.conv_out(x)
+
+        if self.train_mode:
+            x=self.projection(x)
+        return x
+
+    def _upsample_add(self, x, y):
+        """Upsample and add two feature maps.
+        When pooling layer is used, the input size is assumed to be even, 
+        therefore :attr:`align_corners` is set to `False` to avoid feature 
+        mis-match. When downsampling by stride, the input size is assumed 
+        to be 2n+1, and :attr:`align_corners` is set to `True`.
+        """
+        align_corners = False if self.pooling else True
+        x = F.interpolate(x, size=y.shape[2:], mode='trilinear',
+                          align_corners=align_corners)
+        return x + y
+
+    def _get_kernal_size(self, is_isotropic, io_layer=False):
+        if io_layer:  # kernel and padding size of I/O layers
+            if is_isotropic:
+                return (5, 5, 5), (2, 2, 2)
+            return (1, 5, 5), (0, 2, 2)
+
+        if is_isotropic:
+            return (3, 3, 3), (1, 1, 1)
+        return (1, 3, 3), (0, 1, 1)
+
+    def _get_stride(self, is_isotropic, previous, i):
+        if self.pooling or previous == i:
+            return 1
+
+        return self._get_downsample(is_isotropic)
+
+    def _get_downsample(self, is_isotropic):
+        if not is_isotropic:
+            return (1, 2, 2)
+        return 2
+
+    def _make_pooling_layer(self, is_isotropic, previous, i):
+        if self.pooling and previous != i:
+            kernel_size = stride = self._get_downsample(is_isotropic)
+            return nn.MaxPool3d(kernel_size, stride)
+
+        return nn.Identity()
+
+
+class UNetPlus3D(UNet3D):
+    def __init__(self,
+                 filters: List[int] = [28, 36, 48, 64, 80],
+                 norm_mode: str = 'bn',
+                 **kwargs):
+
+        super().__init__(filters=filters, norm_mode=norm_mode, **kwargs)
+        self.feat_layers = nn.ModuleList(
+            [conv3d_norm_act(filters[-1], filters[k-1], 1, **self.shared_kwargs)
+             for k in range(1, self.depth)]
+        )
+        self.non_local = NonLocalBlock3D(
+            filters[-1], sub_sample=False, norm_mode=norm_mode)
+
+    def forward(self, x):
+        x = self.conv_in(x)
+
+        down_x = [None] * (self.depth-1)
+        for i in range(self.depth-1):
+            x = self.down_layers[i](x)
+            down_x[i] = x
+
+        x = self.down_layers[-1](x)
+        x = self.non_local(x)
+        feat = x  # lowest-res feature map
+
+        for j in range(self.depth-1):
+            i = self.depth-2-j
+            x = self.up_layers[i][0](x)
+            x = self._upsample_add(x, down_x[i])
+            x = self._upsample_add(self.feat_layers[i](feat), x)
+            x = self.up_layers[i][1](x)
+
+        x = self.conv_out(x)
         return x
 
 
-class UNet3D(AbstractUNet):
-    """
-    3DUnet model from
-    `"3D U-Net: Learning Dense Volumetric Segmentation from Sparse Annotation"
-        <https://arxiv.org/pdf/1606.06650.pdf>`.
-
-    Uses `DoubleConv` as a basic_module and nearest neighbor upsampling in the decoder
-    """
-
-    def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=4, is_segmentation=True, conv_padding=1,
-                 conv_upscale=2, upsample='default', dropout_prob=0.1, **kwargs):
-        super(UNet3D, self).__init__(in_channels=in_channels,
-                                     out_channels=out_channels,
-                                     final_sigmoid=final_sigmoid,
-                                     basic_module=DoubleConv,
-                                     f_maps=f_maps,
-                                     layer_order=layer_order,
-                                     num_groups=num_groups,
-                                     num_levels=num_levels,
-                                     is_segmentation=is_segmentation,
-                                     conv_padding=conv_padding,
-                                     conv_upscale=conv_upscale,
-                                     upsample=upsample,
-                                     dropout_prob=dropout_prob,
-                                     is3d=True)
-
-
-class ResidualUNet3D(AbstractUNet):
-    """
-    Residual 3DUnet model implementation based on https://arxiv.org/pdf/1706.00120.pdf.
-    Uses ResNetBlock as a basic building block, summation joining instead
-    of concatenation joining and transposed convolutions for upsampling (watch out for block artifacts).
-    Since the model effectively becomes a residual net, in theory it allows for deeper UNet.
+class UNet2D(nn.Module):
+    """2D residual U-Net architecture.
+    Args:
+        block_type (str): the block type at each U-Net stage. Default: ``'residual'``
+        in_channel (int): number of input channels. Default: 1
+        out_channel (int): number of output channels. Default: 3
+        filters (List[int]): number of filters at each U-Net stage. Default: [28, 36, 48, 64, 80]
+        pad_mode (str): one of ``'zeros'``, ``'reflect'``, ``'replicate'`` or ``'circular'``. Default: ``'replicate'``
+        act_mode (str): one of ``'relu'``, ``'leaky_relu'``, ``'elu'``, ``'gelu'``, 
+            ``'swish'``, ``'efficient_swish'`` or ``'none'``. Default: ``'relu'``
+        norm_mode (str): one of ``'bn'``, ``'sync_bn'`` ``'in'`` or ``'gn'``. Default: ``'bn'``
+        init_mode (str): one of ``'xavier'``, ``'kaiming'``, ``'selu'`` or ``'orthogonal'``. Default: ``'orthogonal'``
+        pooling (bool): downsample by max-pooling if `True` else using stride. Default: `False`
     """
 
-    def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=5, is_segmentation=True, conv_padding=1,
-                 conv_upscale=2, upsample='default', dropout_prob=0.1, **kwargs):
-        super(ResidualUNet3D, self).__init__(in_channels=in_channels,
-                                             out_channels=out_channels,
-                                             final_sigmoid=final_sigmoid,
-                                             basic_module=ResNetBlock,
-                                             f_maps=f_maps,
-                                             layer_order=layer_order,
-                                             num_groups=num_groups,
-                                             num_levels=num_levels,
-                                             is_segmentation=is_segmentation,
-                                             conv_padding=conv_padding,
-                                             conv_upscale=conv_upscale,
-                                             upsample=upsample,
-                                             dropout_prob=dropout_prob,
-                                             is3d=True)
+    block_dict = {
+        'residual': BasicBlock2d,
+        'residual_se': BasicBlock2dSE,
+    }
+
+    def __init__(self,
+                 block_type='residual',
+                 in_channel: int = 1,
+                 out_channel: int = 3,
+                 filters: List[int] = [32, 64, 128, 256, 512],
+                 pad_mode: str = 'replicate',
+                 act_mode: str = 'elu',
+                 norm_mode: str = 'bn',
+                 init_mode: str = 'orthogonal',
+                 pooling: bool = False,
+                 **kwargs):
+        super().__init__()
+        self.depth = len(filters)
+        self.pooling = pooling
+        block = self.block_dict[block_type]
+
+        shared_kwargs = {
+            'pad_mode': pad_mode,
+            'act_mode': act_mode,
+            'norm_mode': norm_mode}
+
+        # input and output layers
+        self.conv_in = conv2d_norm_act(
+            in_channel, filters[0], 5, padding=2, **shared_kwargs)
+        self.conv_out = conv2d_norm_act(filters[0], out_channel, 5, padding=2,
+                                        bias=True, pad_mode=pad_mode, act_mode='none', norm_mode='none')
+
+        # encoding path
+        self.down_layers = nn.ModuleList()
+        for i in range(self.depth):
+            kernel_size, padding = 3, 1
+            previous = max(0, i-1)
+            stride = self._get_stride(previous, i)
+            layer = nn.Sequential(
+                self._make_pooling_layer(previous, i),
+                conv2d_norm_act(filters[previous], filters[i], kernel_size,
+                                stride=stride, padding=padding, **shared_kwargs),
+                block(filters[i], filters[i], **shared_kwargs))
+            self.down_layers.append(layer)
+
+        # decoding path
+        self.up_layers = nn.ModuleList()
+        for j in range(1, self.depth):
+            kernel_size, padding = 3, 1
+            layer = nn.ModuleList([
+                conv2d_norm_act(filters[j], filters[j-1], kernel_size,
+                                padding=padding, **shared_kwargs),
+                block(filters[j-1], filters[j-1], **shared_kwargs)])
+            self.up_layers.append(layer)
+
+        # initialization
+        model_init(self, mode=init_mode)
+
+    def forward(self, x):
+        x = self.conv_in(x)
+
+        down_x = [None] * (self.depth-1)
+        for i in range(self.depth-1):
+            x = self.down_layers[i](x)
+            down_x[i] = x
+
+        x = self.down_layers[-1](x)
+
+        for j in range(self.depth-1):
+            i = self.depth-2-j
+            x = self.up_layers[i][0](x)
+            x = self._upsample_add(x, down_x[i])
+            x = self.up_layers[i][1](x)
+
+        x = self.conv_out(x)
+        return x
+
+    def _upsample_add(self, x, y):
+        """Upsample and add two feature maps.
+        When pooling layer is used, the input size is assumed to be even, 
+        therefore :attr:`align_corners` is set to `False` to avoid feature 
+        mis-match. When downsampling by stride, the input size is assumed 
+        to be 2n+1, and :attr:`align_corners` is set to `False`.
+        """
+        align_corners = False if self.pooling else True
+        x = F.interpolate(x, size=y.shape[2:], mode='bilinear',
+                          align_corners=align_corners)
+        return x + y
+
+    def _get_stride(self, previous, i):
+        if self.pooling or previous == i:
+            return 1
+        return 2
+
+    def _make_pooling_layer(self, previous, i):
+        if self.pooling and previous != i:
+            kernel_size = stride = 2
+            return nn.MaxPool2d(kernel_size, stride)
+
+        return nn.Identity()
+    
+MODEL_MAP = {
+    'unet_3d': UNet3D,
+    'unet_2d': UNet2D,
+    'unet_plus_3d': UNetPlus3D,
+
+}
+
+from box import Box
+def build_unet_model(cfg):
+    cfg=Box(cfg)
+
+    model_arch = cfg.MODEL.ARCHITECTURE
+    assert model_arch in MODEL_MAP.keys()
+    kwargs = {
+        'block_type': cfg.MODEL.BLOCK_TYPE,
+        'in_channel': cfg.MODEL.IN_PLANES,
+        'out_channel': cfg.MODEL.OUT_PLANES,
+        'filters': cfg.MODEL.FILTERS,
+        'ks': cfg.MODEL.KERNEL_SIZES,
+        'blocks': cfg.MODEL.BLOCKS,
+        'attn': cfg.MODEL.ATTENTION,
+        'is_isotropic': cfg.DATASET.IS_ISOTROPIC,
+        'isotropy': cfg.MODEL.ISOTROPY,
+        'pad_mode': cfg.MODEL.PAD_MODE,
+        'act_mode': cfg.MODEL.ACT_MODE,
+        'norm_mode': cfg.MODEL.NORM_MODE,
+        'pooling': cfg.MODEL.POOLING_LAYER,
+        'input_size': cfg.MODEL.INPUT_SIZE if cfg.MODEL.MORPH_INPUT_SIZE is None else cfg.MODEL.MORPH_INPUT_SIZE,
+        'train_mode': cfg.MODEL.train_mode,
+    }
 
 
-class ResidualUNetSE3D(AbstractUNet):
-    """_summary_
-    Residual 3DUnet model implementation with squeeze and excitation based on 
-    https://arxiv.org/pdf/1706.00120.pdf.
-    Uses ResNetBlockSE as a basic building block, summation joining instead
-    of concatenation joining and transposed convolutions for upsampling (watch
-    out for block artifacts). Since the model effectively becomes a residual
-    net, in theory it allows for deeper UNet.
-    """
+    model = MODEL_MAP[cfg.MODEL.ARCHITECTURE](**kwargs)
+    print('model: ', model.__class__.__name__)
 
-    def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=5, is_segmentation=True, conv_padding=1,
-                 conv_upscale=2, upsample='default', dropout_prob=0.1, **kwargs):
-        super(ResidualUNetSE3D, self).__init__(in_channels=in_channels,
-                                               out_channels=out_channels,
-                                               final_sigmoid=final_sigmoid,
-                                               basic_module=ResNetBlockSE,
-                                               f_maps=f_maps,
-                                               layer_order=layer_order,
-                                               num_groups=num_groups,
-                                               num_levels=num_levels,
-                                               is_segmentation=is_segmentation,
-                                               conv_padding=conv_padding,
-                                               conv_upscale=conv_upscale,
-                                               upsample=upsample,
-                                               dropout_prob=dropout_prob,
-                                               is3d=True)
+    return model
+ 
 
-
-class UNet2D(AbstractUNet):
-    """
-    2DUnet model from
-    `"U-Net: Convolutional Networks for Biomedical Image Segmentation" <https://arxiv.org/abs/1505.04597>`
-    """
-
-    def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=4, is_segmentation=True, conv_padding=1,
-                 conv_upscale=2, upsample='default', dropout_prob=0.1, **kwargs):
-        super(UNet2D, self).__init__(in_channels=in_channels,
-                                     out_channels=out_channels,
-                                     final_sigmoid=final_sigmoid,
-                                     basic_module=DoubleConv,
-                                     f_maps=f_maps,
-                                     layer_order=layer_order,
-                                     num_groups=num_groups,
-                                     num_levels=num_levels,
-                                     is_segmentation=is_segmentation,
-                                     conv_padding=conv_padding,
-                                     conv_upscale=conv_upscale,
-                                     upsample=upsample,
-                                     dropout_prob=dropout_prob,
-                                     is3d=False)
-
-
-class ResidualUNet2D(AbstractUNet):
-    """
-    Residual 2DUnet model implementation based on https://arxiv.org/pdf/1706.00120.pdf.
-    """
-
-    def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
-                 num_groups=8, num_levels=5, is_segmentation=True, conv_padding=1,
-                 conv_upscale=2, upsample='default', dropout_prob=0.1, **kwargs):
-        super(ResidualUNet2D, self).__init__(in_channels=in_channels,
-                                             out_channels=out_channels,
-                                             final_sigmoid=final_sigmoid,
-                                             basic_module=ResNetBlock,
-                                             f_maps=f_maps,
-                                             layer_order=layer_order,
-                                             num_groups=num_groups,
-                                             num_levels=num_levels,
-                                             is_segmentation=is_segmentation,
-                                             conv_padding=conv_padding,
-                                             conv_upscale=conv_upscale,
-                                             upsample=upsample,
-                                             dropout_prob=dropout_prob,
-                                             is3d=False)
-
-
-def get_model(model_config):
-    """
-    instantiation a typical unet based on 'name' in model_config
-    """
-    model_class = get_class(model_config['name'], modules=[
-        'pytorch3dunet.unet3d.model'
-    ])
-    return model_class(**model_config)

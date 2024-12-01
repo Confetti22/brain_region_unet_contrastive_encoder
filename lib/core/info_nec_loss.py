@@ -4,7 +4,7 @@ import numpy as np
 
 
 
-def compute_feature_list_split2(ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def compute_feature_list(ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
     """
     directly compute the average of features for each class, do not split the features in a class into two groups`:w
     pros: matrix computation, efficient, 
@@ -49,7 +49,7 @@ def compute_feature_list_split2(ori_features:torch.Tensor, psd_label:torch.Tenso
     return avg_features 
 
 
-def compute_feature_list_split2(args,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def compute_feature_list_split2(cfg,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
     """
     randomly sample half of the features and average to be f_i, the rest to be g_i
 
@@ -71,12 +71,24 @@ def compute_feature_list_split2(args,ori_features:torch.Tensor, psd_label:torch.
 
     # Compute class proportions
     total_pixels = psd_label_flat.numel()
-    unique_classes, counts = torch.unique(psd_label_flat, return_counts=True).to(args.device)
-    proportions = counts.float() / total_pixels
-    valid_classes = unique_classes[proportions >= rare_class_ratio_thres]
+    unique_classes, counts = torch.unique(psd_label_flat, return_counts=True)
+    #convert to Long to support the following indexing operation: unique_class[proportions >= thres]
+    unique_classes=unique_classes.to(cfg.SYSTEM.DEVICE).long() 
 
-    feature_list1 = torch.zeros(size=(len(unique_classes),C)).to(args.device)
-    feature_list2 = torch.zeros(size=(len(unique_classes),C)).to(args.device)
+    counts.to(cfg.SYSTEM.DEVICE)
+    
+    proportions = counts.float() / total_pixels
+    thres=torch.tensor(rare_class_ratio_thres,device=cfg.SYSTEM.DEVICE, dtype=torch.float32)
+
+    mask = proportions >= thres  # This should produce a boolean tensor
+    print("unique_classes dtype, device:", unique_classes.dtype, unique_classes.device)
+    print("mask dtype, device:", mask.dtype, mask.device)
+
+    valid_classes = unique_classes[mask]
+
+
+    feature_list1 = torch.zeros(size=(len(unique_classes),C)).to(cfg.SYSTEM.DEVICE)
+    feature_list2 = torch.zeros(size=(len(unique_classes),C)).to(cfg.SYSTEM.DEVICE)
 
     for idx,cls in enumerate(valid_classes):
         # Get indices of pixels belonging to the current class
@@ -105,24 +117,28 @@ def compute_feature_list_split2(args,ori_features:torch.Tensor, psd_label:torch.
 
 
 
-def _info_nce_loss( args,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def _info_nce_loss( cfg,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
     """
     parameters:
     features  : B*C*Z*Y*X
     psd_label : B*1*Z*Y*X
+
+    first getnerate features list based on psd_label
+    then compute similarity matrix
+    then compute logits
     """
-    features=compute_feature_list_split2(args,ori_features,psd_label,rare_class_ratio_thres)
+    features=compute_feature_list_split2(cfg,ori_features,psd_label,rare_class_ratio_thres)
     N=int(features.shape[0]//2)
  
     similarity_matrix = torch.matmul(features, features.T)
 
-    labels = torch.cat([torch.arange(N) for i in range(args.n_views)], dim=0)
+    labels = torch.cat([torch.arange(N) for i in range(cfg.LOSS.n_views)], dim=0)
     labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
-    labels = labels.to(args.device)
+    labels = labels.to(cfg.SYSTEM.DEVICE)
 
 
     # discard the main diagonal from both: labels and similarities matrix
-    mask = torch.eye(labels.shape[0], dtype=torch.bool).to(args.device)
+    mask = torch.eye(labels.shape[0], dtype=torch.bool).to(cfg.SYSTEM.DEVICE)
     labels = labels[~mask].view(labels.shape[0], -1)
     similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
     # assert similarity_matrix.shape == labels.shape
@@ -134,7 +150,8 @@ def _info_nce_loss( args,ori_features:torch.Tensor, psd_label:torch.Tensor , rar
     negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
 
     logits = torch.cat([positives, negatives], dim=1)
-    labels = torch.zeros(logits.shape[0], dtype=torch.long).to(args.device)
+    labels = torch.zeros(logits.shape[0], dtype=torch.long).to(cfg.SYSTEM.DEVICE)
 
-    logits = logits / args.temperature
+    logits = logits / cfg.LOSS.temperature
+    logits.requires_grad_()
     return logits, labels
