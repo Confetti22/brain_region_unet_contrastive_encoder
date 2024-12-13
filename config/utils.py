@@ -11,7 +11,8 @@ def load_cfg(args: argparse.Namespace, merge_cmd=False):
     # Set configurations
     cfg = get_cfg_defaults()
     cfg.set_new_allowed(True)
-    cfg.merge_from_file(args.cfg)
+    cfg_path = args if isinstance(args,str) else args.cfg
+    cfg.merge_from_file(cfg_path)
     # if merge_cmd:
     #     cfg.merge_from_list(args.opts)
 

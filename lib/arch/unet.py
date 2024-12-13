@@ -6,7 +6,25 @@ import torch.nn.functional as F
 
 from lib.arch.block import *
 from lib.arch.utils import model_init
+from lib.arch.decoder import build_decoder_model
 
+
+def center_crop_embdding(tensor,ratio=4):
+    B, C, D, H, W = tensor.shape
+    # Calculate the new size for the crop
+    new_D = D // ratio 
+    new_H = H // ratio
+    new_W = W // ratio
+    
+    # Calculate the center crop start indices
+    start_D = (D - new_D) // 2
+    start_H = (H - new_H) // 2
+    start_W = (W - new_W) // 2
+    
+    # Perform the crop using slicing
+    cropped_tensor = tensor[:, :, start_D:start_D + new_D, start_H:start_H + new_H, start_W:start_W + new_W]
+    
+    return cropped_tensor
 
 class UNet3D(nn.Module):
     """3D residual U-Net architecture. This design is flexible in handling both isotropic data and anisotropic data.
@@ -48,11 +66,15 @@ class UNet3D(nn.Module):
                  init_mode: str = 'orthogonal',
                  pooling: bool = False,
                  blurpool: bool = False,
-                 train_mode: bool = False,
+                 contrastive_mode: bool = False,
+                 decode_mode: bool = True,
                  **kwargs):
         super().__init__()
         assert len(filters) == len(isotropy)
-        self.train_mode = train_mode
+        self.contrastive_mode = contrastive_mode
+        self.decode_mode = decode_mode
+        self.emb_dim =2048
+        self.filters = filters
         self.depth = len(filters)
         if is_isotropic:
             isotropy = [True] * self.depth
@@ -86,6 +108,11 @@ class UNet3D(nn.Module):
                 block(filters[i], filters[i], **self.shared_kwargs,isotropic=is_isotropic))
             self.down_layers.append(layer)
 
+        #linear projection for embdding
+        self.last_encoder_conv=nn.Conv3d(self.filters[-1],self.filters[-1],kernel_size=1,stride=1)
+        self.generate_embbding = nn.Linear(128*16*16*16, self.emb_dim)        
+        self.degenerate_embbding= nn.Linear(self.emb_dim, 128*4*4*4)
+
         # decoding path
         self.up_layers = nn.ModuleList()
         for j in range(1, self.depth):
@@ -97,36 +124,53 @@ class UNet3D(nn.Module):
             self.up_layers.append(layer)
         
         projection_dim=64
-        self.projection=nn.Sequential(
+        self.contrastive_projt=nn.Sequential(
                 nn.Conv3d(in_channels=out_channel,out_channels=projection_dim,kernel_size=1,stride=1),
-                nn.ReLU(inplace=False),
+                nn.ReLU(),
                 nn.Conv3d(in_channels=projection_dim,out_channels=projection_dim,kernel_size=1,stride=1),
         )
+        
+        self.decoder = build_decoder_model()
 
         # initialization
         model_init(self, mode=init_mode)
 
     def forward(self, x):
+        
+        #encoder path
         x = self.conv_in(x)
-
         down_x = [None] * (self.depth-1)
         for i in range(self.depth-1):
             x = self.down_layers[i](x)
             down_x[i] = x
-
         x = self.down_layers[-1](x)
+        x = self.last_encoder_conv(x) 
+        shape = x.shape
+        flattened_x = x.reshape(shape[0],-1) 
+        embbding = self.generate_embbding(flattened_x) 
 
-        for j in range(self.depth-1):
-            i = self.depth-2-j
-            x = self.up_layers[i][0](x)
-            x = self._upsample_add(x, down_x[i])
-            x = self.up_layers[i][1](x)
+        if self.contrastive_mode:
+            x1 = embbding
+            for j in range(self.depth-1):
+                i = self.depth-2-j
+                x1 = self.up_layers[i][0](x1)
+                x1 = self._upsample_add(x1, down_x[i])
+                x1 = self.up_layers[i][1](x1)
 
-        x = self.conv_out(x)
+            x1 = self.conv_out(x1)
+            x1 = self.contrastive_projt(x1)
+            return x1
 
-        if self.train_mode:
-            x=self.projection(x)
-        return x
+        elif self.decode_mode:
+            x2 = self.degenerate_embbding(embbding) 
+            x2 = x2.reshape(shape[0],128,4,4,4)
+            
+            x2 = self.decoder(x2)
+            return x2
+        
+        #TODO if future need both contrastive an decode, modify the control flow
+        else :
+            return embbding
 
     def _upsample_add(self, x, y):
         """Upsample and add two feature maps.

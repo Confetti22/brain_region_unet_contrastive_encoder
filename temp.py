@@ -10,3 +10,7 @@ x=F.interpolate(x, size,mode='nearest')
 print(x.shape)
 print(f"finished")
 # %%
+for i in range(5,0,-1):
+    print(i)
+
+# %%

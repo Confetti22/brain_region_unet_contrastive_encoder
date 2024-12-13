@@ -24,7 +24,7 @@ def parse_args():
                                             help='path to out directory')
 
     # === GENERAL === #
-    parser.add_argument('-model', type=str, default="my_model",
+    parser.add_argument('-model', type=str, default="recon_smallnet_sme_loss_woreg_256dim",
                                             help='Model name')
     parser.add_argument('-reset', action='store_true',
                                             help='Reset saved model logs and weights')
@@ -40,7 +40,7 @@ def parse_args():
                                             help='Dataset to choose')
     # parser.add_argument('-dataset_name',type=str,defalut='cifar10', 
     #                                         help='the name of the dataset')
-    parser.add_argument('-batch_per_gpu', type=int, default = 8,
+    parser.add_argument('-batch_per_gpu', type=int, default = 2,
                                             help='batch size per gpu')
     parser.add_argument('-shuffle', type=bool_flag, default = True,
                                             help='Shuffle dataset')
@@ -54,11 +54,11 @@ def parse_args():
     # === Trainer === #
     parser.add_argument('-trainer', type=str, default = 'trainer',
                                             help='Trainer to choose')
-    parser.add_argument('-epochs', type=int, default = 100,
+    parser.add_argument('-epochs', type=int, default = 5000,
                                             help='number of epochs')
     parser.add_argument('-save_every', type=int, default = 10,
                                             help='Save frequency')
-    parser.add_argument('-fp16', type=torch.dtype,default=torch.bfloat16, help='bfloat16 will be more numerical stable')
+    parser.add_argument('-fp16', type=torch.dtype,default=torch.float32, help='bfloat16 will be more numerical stable')
 
 
     # === Optimization === #
@@ -106,13 +106,14 @@ def parse_args():
 
 
 class SLURM_Trainer(object):
-    def __init__(self, args):
+    def __init__(self, args,cfg):
         self.args = args
+        self.cfg=cfg
 
     def __call__(self):
 
         init_dist_node(self.args)
-        train(None, self.args)
+        train(None, self.args, self.cfg)
 
 
 from config import load_cfg
@@ -131,7 +132,7 @@ def main():
         executor = submitit.AutoExecutor(folder=args.output_dir, slurm_max_num_timeout=30)
 
         executor.update_parameters(
-            mem_gb=12*args.slurm_ngpus,
+            mem_gb=128*args.slurm_ngpus,
             gpus_per_node=args.slurm_ngpus,
             tasks_per_node=args.slurm_ngpus,
             cpus_per_task=2,
@@ -144,17 +145,17 @@ def main():
             executor.update_parameters(slurm_additional_parameters = {"nodelist": f'{args.slurm_nodelist}' })
 
         executor.update_parameters(name=args.model)
-        trainer = SLURM_Trainer(args)
+        trainer = SLURM_Trainer(args,cfg)
         job = executor.submit(trainer)
         print(f"Submitted job_id: {job.job_id}")
 
 
     else:
         init_dist_node(args)
-        mp.spawn(train, args = (args,cfg), nprocs = args.ngpus_per_node)
+        mp.spawn(train, args=(args,cfg), nprocs=args.ngpus_per_node)
 	
 
-def train(gpu, args,cfg):
+def train(gpu, args, cfg):
 
 
     # === SET ENV === #
@@ -163,9 +164,10 @@ def train(gpu, args,cfg):
     # === DATA === #
     # get_dataset = getattr(__import__("lib.datasets.{}".format(args.dataset), fromlist=["get_dataset"]), "get_dataset")
     from lib.datasets.visor_3d_dataset import get_dataset
-    dataset = get_dataset(args)
+    dataset = get_dataset(cfg)
 
     sampler = DistributedSampler(dataset, shuffle=cfg.DATASET.shuffle, num_replicas = args.world_size, rank = args.rank, seed = 31)
+    print(f"batch_size {cfg.DATASET.batch_per_gpu} ")
     loader = DataLoader(dataset=dataset, 
                             sampler = sampler,
                             batch_size=cfg.DATASET.batch_per_gpu, 
@@ -176,30 +178,38 @@ def train(gpu, args,cfg):
     print(f"Data loaded")
 
     # === MODEL === #
-    from lib.arch.unet import build_unet_model
-    model = build_unet_model(cfg)
+    from lib.arch.autoencoder import build_autoencoder_model
+    from torchsummary import summary
+
+    model = build_autoencoder_model(cfg)
     model=model.cuda(args.gpu)
     model.train()
+
+    
+    #print out model info
+    print(model)
+    summary(model,(1,128,128,128))
+
     # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) #group_norm did not require to sync, group_norm is preferred when batch_size is small
     model = nn.parallel.DistributedDataParallel(model, device_ids= [cfg.SYSTEM.GPU_IDS])
 
 
-    from torchsummary import summary
-    model.to('cuda')
-    summary(model,(1,128,128,128))
 
     # === LOSS === #
     from lib.core.contrastive_loss import get_loss
-    loss = get_loss(cfg).cuda(args.gpu)
-
+    contrastive_loss = get_loss(cfg).cuda(args.gpu)
+    
+    #reconsturct the preprocess image in range [0-1] with bce loss
+    recon_loss = nn.MSELoss()
 
     # === OPTIMIZER === #
     from lib.core.optimizer import get_optimizer
-    optimizer = get_optimizer(model, args)
+    # optimizer = get_optimizer(model, args)
+    optimizer = torch.optim.Adam(model.parameters(),lr = args.lr_start)
 
     # === TRAINING === #
     Trainer = getattr(__import__("lib.trainers.{}".format(args.trainer), fromlist=["Trainer"]), "Trainer")
-    Trainer(args, loader, model, loss, optimizer).fit()
+    Trainer(args, loader, model, recon_loss, optimizer).fit()
 
 
 if __name__ == "__main__":

@@ -19,8 +19,46 @@ from lib.core.scheduler import cosine_scheduler
 from lib.utils.distributed import MetricLogger
 from glob import glob
 import math
-
+import numpy as np
+import tifffile as tif
 import sys
+import re
+
+import os
+
+import torch
+
+def get_three_slice(x):
+    radius =int(x.shape[-1]//2)
+    x_x = x[:,:,radius]
+    x_y = x[:,radius,:]
+    x_z = x[radius,:,:]
+    return x_x, x_y, x_z
+
+def center_crop_tensor(input_tensor, receptive_field):
+    # Ensure that the input tensor has the shape B*C*D*H*W
+    B, C, D, H, W = input_tensor.shape
+
+    # Extract receptive field dimensions
+    rD, rH, rW = receptive_field
+
+    # Calculate the start and end indices for each dimension
+    start_d = (D - rD) // 2
+    end_d = start_d + rD
+    start_h = (H - rH) // 2
+    end_h = start_h + rH
+    start_w = (W - rW) // 2
+    end_w = start_w + rW
+
+    # Perform the center cropping
+    cropped_tensor = input_tensor[:, :, start_d:end_d, start_h:end_h, start_w:end_w]
+    
+    return cropped_tensor
+
+def unnormalize(img):
+    clip_low = 96
+    clip_high = 2672
+    return img *(clip_high - clip_low) + clip_low
 
 class Trainer:
 
@@ -33,6 +71,9 @@ class Trainer:
         self.optimizer = optimizer
         self.fp16_scaler = torch.GradScaler('cuda') if args.fp16 else None
 
+        self.recon_img_dir = "{}/recon_img/{}".format(args.out, args.model)
+        os.makedirs(self.recon_img_dir,exist_ok=True)
+
         # === TB writers === #
         if self.args.main:	
 
@@ -43,7 +84,9 @@ class Trainer:
             checkdir("{}/weights/{}/".format(args.out, self.args.model), args.reset)
 
 
-    def train_one_epoch(self, epoch, lr_schedule):
+    def train_one_epoch(self, epoch, lr_schedule, save_recon_img_flag, MSE_loss:True):
+        self.model.train()
+
 
         metric_logger = MetricLogger(delimiter="  ")
         header = 'Epoch: [{}/{}]'.format(epoch, self.args.epochs)
@@ -62,7 +105,11 @@ class Trainer:
             # === Forward pass === #
             with torch.autocast('cuda',self.args.fp16):
                 preds = self.model(input_data)
-                loss = self.loss(preds, labels)
+                unnormed_input= unnormalize(input_data)
+                if MSE_loss: 
+                    loss = self.loss(preds,unnormed_input)
+                else :
+                    loss = self.loss(preds, input_data)
 
             # Sanity Check
             if not math.isfinite(loss.item()):
@@ -71,7 +118,6 @@ class Trainer:
             
             # === Backward pass === #
             self.model.zero_grad()
-
             # for mix precision backward propogation
             # if self.args.fp16:
             #     self.fp16_scaler.scale(loss).backward()
@@ -85,6 +131,36 @@ class Trainer:
             # === Logging === #
             torch.cuda.synchronize()
             metric_logger.update(loss=loss.item())
+
+            if save_recon_img_flag:
+                preds = preds.detach().cpu().numpy()
+                preds = np.squeeze(preds)
+
+
+                input_data = input_data.detach().cpu().numpy()
+                input_data = np.squeeze(input_data)
+                
+                unnormed_input = unnormed_input.detach().cpu().numpy()
+                unnormed_input = np.squeeze(unnormed_input)
+
+                num=unnormed_input.shape[0]
+                for id in [0,1]:
+                    x = unnormed_input[id]
+                    re_x = preds[id]
+
+                    x_name = f"{epoch:04d}_{id}_x.tif"
+                    re_x_name = f"{epoch:04d}_{id}_re_x.tif"
+                    tif.imwrite(os.path.join(self.recon_img_dir,x_name) , x)
+                    tif.imwrite(os.path.join(self.recon_img_dir,re_x_name) , re_x)
+
+                    x_x,x_y,x_z=get_three_slice(x)
+                    re_x_x, re_x_y, re_x_z = get_three_slice(re_x)
+                    merged_x = np.concatenate((x_x, x_y, x_z), axis=1)  
+                    merged_re_x = np.concatenate((re_x_x, re_x_y, re_x_z), axis=1)  
+                    merged = np.concatenate((merged_x,merged_re_x), axis=0)
+                    self.writer.add_image('x and re_x in 3 slice',merged,it,dataformats='HW')
+
+
 
             if self.args.main:
                 self.loss_writer(metric_logger.meters['loss'].value, it)
@@ -113,7 +189,10 @@ class Trainer:
         for epoch in range(self.start_epoch, self.args.epochs):
 
             self.train_gen.sampler.set_epoch(epoch)
-            self.train_one_epoch(epoch, lr_schedule)
+
+            save_recon_img_flag = ( epoch % 50 ==0)
+            self.train_one_epoch(epoch, lr_schedule,save_recon_img_flag,MSE_loss=True)
+
 
             # === save model === #
             if self.args.main and (epoch+1)%self.args.save_every == 0:
@@ -124,6 +203,10 @@ class Trainer:
         ckpts = sorted(glob(f'{self.args.out}/weights/{self.args.model}/Epoch_*.pth'))
 
         if len(ckpts) >0:
+            ckpts = sorted(
+                    ckpts,
+                    key=lambda x: int(re.search(r'Epoch_(\d+).pth', os.path.basename(x)).group(1))
+                    )
             ckpt = torch.load(ckpts[-1], map_location='cpu')
             self.start_epoch = ckpt['epoch']
             self.model.load_state_dict(ckpt['model'])

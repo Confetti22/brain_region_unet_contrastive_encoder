@@ -7,13 +7,13 @@ SYSTEM:
 MODEL:
   train_mode: False 
   INPUT_SIZE: [ 128, 128, 128 ]
-  ARCHITECTURE: autoencoder_s 
+  ARCHITECTURE: unet_3d
   BLOCK_TYPE: residual
-  FILTERS: [32,64,96,112,128]
-  ISOTROPY: [True,True,True,True,True]
+  FILTERS: [32,64,96,128]
+  ISOTROPY: [True,True,True,True]
   # output dense featuremap of dimension 64 
   IN_PLANES: 1
-  OUT_PLANES: 1 
+  OUT_PLANES: 64 
   NORM_MODE: 'gn'
   TARGET_OPT: ["e"]
   POOLING_LAYER: True 
@@ -38,18 +38,14 @@ SOLVER:
   ITERATION_VAL: 200
   SAMPLES_PER_BATCH: 1 # PER GPU
 DATASET:
-  batch_per_gpu: 16
+  amount: 1000   #total amount of training data
+  batch_per_gpu: 4
   num_workers: 0
   shuffle: True
-  ######for fixed dataset######
-  data_path_dir: "/home/confetti/mnt/data/processed/t1779/100roi"
-  # data_path_dir: "/share/home/shiqiz/data/t1779/100roi"
-  clip_low : 96
-  clip_high : 2672
-  ######for random generated dataset######
-  amount: 1000   #total amount of training data , only valid for radom_generated dataset
-  raw_internal_path: "/home/confetti/data/mousebrainatlas/T11.ims.h5" 
-  label_internal_path: "/home/confetti/data/mousebrainatlas/new_t11/registered_atlas.tiff"
+  # raw_internal_path: "/home/confetti/data/mousebrainatlas/T11.ims.h5" 
+  # label_internal_path: "/home/confetti/data/mousebrainatlas/new_t11/registered_atlas.tiff"
+  raw_internal_path: "/share/home/shiqiz/data/new_t11/T11.ims.h5" 
+  label_internal_path: "/share/home/shiqiz/data/new_t11/r2_register/registered_atlas.tiff" 
   level: 0
   voxel_size: 4 #(um)
   min_valid_texture_length:  48 #(um)

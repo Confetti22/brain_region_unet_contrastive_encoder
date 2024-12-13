@@ -4,7 +4,7 @@ import numpy as np
 
 
 
-def compute_feature_list(ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def compute_feature_list(ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.06):
     """
     directly compute the average of features for each class, do not split the features in a class into two groups`:w
     pros: matrix computation, efficient, 
@@ -16,6 +16,7 @@ def compute_feature_list(ori_features:torch.Tensor, psd_label:torch.Tensor , rar
     
 
     discard the class that with ratio lower than rare_class_thres
+    rare_class_ratio
     map the psd_label from 0 to N-1, generate a lable_lst, the index is new class label
     for each class in class label
     """
@@ -49,9 +50,18 @@ def compute_feature_list(ori_features:torch.Tensor, psd_label:torch.Tensor , rar
     return avg_features 
 
 
-def compute_feature_list_split2(cfg,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def compute_feature_list_split2(cfg,ori_features:torch.Tensor, psd_label:torch.Tensor ):
     """
     randomly sample half of the features and average to be f_i, the rest to be g_i
+
+    discard the class that with ratio lower than rare_class_ratio_thres
+    rare_class_ratio_thres should be compute dynamiclly,
+    min_pixel_num = min_lenght(um) / voxel_size(um)
+    min_voxel_num = min_pixel_num**3
+    rare_class_ratio_thres = min_voxel_num / totoal_voxel_count
+
+    map the psd_label from 0 to N-1, generate a lable_lst, the index is new class label
+    for each class in class label
 
     inputs:
     features  : B*C*Z*Y*X
@@ -69,20 +79,28 @@ def compute_feature_list_split2(cfg,ori_features:torch.Tensor, psd_label:torch.T
 
     psd_label_flat=psd_label.view(-1)
 
+
+    
     # Compute class proportions
     total_pixels = psd_label_flat.numel()
     unique_classes, counts = torch.unique(psd_label_flat, return_counts=True)
     #convert to Long to support the following indexing operation: unique_class[proportions >= thres]
     unique_classes=unique_classes.to(cfg.SYSTEM.DEVICE).long() 
-
     counts.to(cfg.SYSTEM.DEVICE)
     
     proportions = counts.float() / total_pixels
+    
+    #compute rare_class_ratio_thres
+    min_voxel_num = (cfg.DATASET.min_valid_texture_length / cfg.DATASET.voxel_size)**3
+    rare_class_ratio_thres = min_voxel_num / total_pixels
+
+
     thres=torch.tensor(rare_class_ratio_thres,device=cfg.SYSTEM.DEVICE, dtype=torch.float32)
 
+
     mask = proportions >= thres  # This should produce a boolean tensor
-    print("unique_classes dtype, device:", unique_classes.dtype, unique_classes.device)
-    print("mask dtype, device:", mask.dtype, mask.device)
+    # print("unique_classes dtype, device:", unique_classes.dtype, unique_classes.device)
+    # print("mask dtype, device:", mask.dtype, mask.device)
 
     valid_classes = unique_classes[mask]
 
@@ -117,7 +135,7 @@ def compute_feature_list_split2(cfg,ori_features:torch.Tensor, psd_label:torch.T
 
 
 
-def _info_nce_loss( cfg,ori_features:torch.Tensor, psd_label:torch.Tensor , rare_class_ratio_thres=0.8):
+def _info_nce_loss( cfg,ori_features:torch.Tensor, psd_label:torch.Tensor ):
     """
     parameters:
     features  : B*C*Z*Y*X
@@ -127,7 +145,7 @@ def _info_nce_loss( cfg,ori_features:torch.Tensor, psd_label:torch.Tensor , rare
     then compute similarity matrix
     then compute logits
     """
-    features=compute_feature_list_split2(cfg,ori_features,psd_label,rare_class_ratio_thres)
+    features=compute_feature_list_split2(cfg,ori_features,psd_label)
     N=int(features.shape[0]//2)
  
     similarity_matrix = torch.matmul(features, features.T)
