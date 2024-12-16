@@ -133,36 +133,34 @@ class Trainer:
             torch.cuda.synchronize()
             metric_logger.update(loss=loss.item())
 
-            if save_recon_img_flag:
-                preds = preds.detach().cpu().numpy()
-                preds = np.squeeze(preds)
-
-                input_data = input_data.detach().cpu().numpy()
-                input_data = np.squeeze(input_data)
-                
-
-                num=input_data.shape[0]
-                for id in [0,1]:
-                    x = input_data[id]
-                    re_x = preds[id]
-
-                    x_name = f"{epoch:04d}_{id}_x.tif"
-                    re_x_name = f"{epoch:04d}_{id}_re_x.tif"
-                    tif.imwrite(os.path.join(self.recon_img_dir,x_name) , x)
-                    tif.imwrite(os.path.join(self.recon_img_dir,re_x_name) , re_x)
-
-                    x_x,x_y,x_z=get_three_slice(x)
-                    re_x_x, re_x_y, re_x_z = get_three_slice(re_x)
-                    merged_x = np.concatenate((x_x, x_y, x_z), axis=1)  
-                    merged_re_x = np.concatenate((re_x_x, re_x_y, re_x_z), axis=1)  
-                    merged = np.concatenate((merged_x,merged_re_x), axis=0)
-                    self.writer.add_image('x and re_x in 3 slice',merged,it,dataformats='HW')
-
-
-
             if self.args.main:
                 self.loss_writer(metric_logger.meters['loss'].value, it)
                 self.lr_sched_writer(self.optimizer.param_groups[0]["lr"], it)
+
+                if save_recon_img_flag:
+                    preds = preds.detach().cpu().numpy()
+                    preds = np.squeeze(preds)
+
+                    input_data = input_data.detach().cpu().numpy()
+                    input_data = np.squeeze(input_data)
+
+                    num=input_data.shape[0]
+                    for id in [0,1]:
+                        x = input_data[id]
+                        re_x = preds[id]
+
+                        x_name = f"{epoch:04d}_{id}_x.tif"
+                        re_x_name = f"{epoch:04d}_{id}_re_x.tif"
+                        tif.imwrite(os.path.join(self.recon_img_dir,x_name) , x)
+                        tif.imwrite(os.path.join(self.recon_img_dir,re_x_name) , re_x)
+
+                        x_x,x_y,x_z=get_three_slice(x)
+                        re_x_x, re_x_y, re_x_z = get_three_slice(re_x)
+                        merged_x = np.concatenate((x_x, x_y, x_z), axis=1)  
+                        merged_re_x = np.concatenate((re_x_x, re_x_y, re_x_z), axis=1)  
+                        merged = np.concatenate((merged_x,merged_re_x), axis=0)
+                        self.writer.add_image('x and re_x in 3 slice',merged,it,dataformats='HW')
+
 
 
         metric_logger.synchronize_between_processes()

@@ -156,7 +156,7 @@ def train(gpu, args, cfg):
     summary(model,(1,128,128,128))
 
     # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) #group_norm did not require to sync, group_norm is preferred when batch_size is small
-    model = nn.parallel.DistributedDataParallel(model, device_ids= [cfg.SYSTEM.GPU_IDS])
+    model = nn.parallel.DistributedDataParallel(model, device_ids= [args.gpu])
 
 
     # === LOSS === #

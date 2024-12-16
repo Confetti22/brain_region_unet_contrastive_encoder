@@ -19,12 +19,11 @@ class T11_Dataset(Dataset):
         
         #filepath,trans,evalue_img=None,evalue_mode=False,amount=0.5
         self.e5 = cfg.SYSTEM.e5
-        self.data_cfg=cfg.DATASET
-        self.input_shape=self.data_cfg.input_size
-        self.data_path = self.data_cfg.data_path_dir
-        self.e5_data_path = self.data_cfg.e5_data_path_dir
-        self.clip_low = self.data_cfg.clip_low
-        self.clip_high = self.data_cfg.clip_high
+        self.input_shape=cfg.DATASET.input_size
+        self.data_path = cfg.DATASET.data_path_dir
+        self.e5_data_path = cfg.DATASET.e5_data_path_dir
+        self.clip_low = cfg.PREPROCESS.clip_low
+        self.clip_high = cfg.PREPROCESS.clip_high
         self.is_norm = cfg.PREPROCESS.NORM
         #totoal data amount used for training
 

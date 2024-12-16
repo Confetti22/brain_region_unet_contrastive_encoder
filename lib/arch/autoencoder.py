@@ -203,11 +203,10 @@ def build_autoencoder_model(cfg):
         'in_channel': cfg.MODEL.IN_PLANES,
         'out_channel': cfg.MODEL.OUT_PLANES,
         'filters': cfg.MODEL.FILTERS,
-        'blocks': cfg.MODEL.BLOCKS,
         'pad_mode': cfg.MODEL.PAD_MODE,
         'act_mode': cfg.MODEL.ACT_MODE,
         'norm_mode': cfg.MODEL.NORM_MODE,
-        'input_size': cfg.MODEL.INPUT_SIZE if cfg.MODEL.MORPH_INPUT_SIZE is None else cfg.MODEL.MORPH_INPUT_SIZE,
+        'input_size': cfg.MODEL.INPUT_SIZE,
         'upsample_interp':cfg.MODEL.UPSAMPLE_INTERP
     }
 

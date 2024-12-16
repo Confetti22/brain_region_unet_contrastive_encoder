@@ -1,8 +1,8 @@
 
-EXP_NAME : "test_singleconv_trilinearUpsample_unnorm_mse" #EXP_NAME used to distinguish each run
+EXP_NAME : "test2_simple_arch_transconv_unnorm_mse" #EXP_NAME used to distinguish each run
 OUT: "out" #path to output directory
 SYSTEM:
-  e5: False #control dataset_path to use on cluster or loacl
+  e5: False #control dataset_path to use on cluster or local
   DEVICE: cuda
   GPU_IDS: 0
   NUM_GPUS: 1
@@ -10,6 +10,7 @@ SYSTEM:
 MODEL:
   INPUT_SIZE: [ 128, 128, 128 ]
   ARCHITECTURE: autoencoder
+  # BLOCK_TYPE can be 'single' 'double' 'residual' or empty(will use one conv each layer)
   BLOCK_TYPE: single 
   FILTERS: [32,64,96,112,128]
   IN_PLANES: 1
@@ -17,7 +18,7 @@ MODEL:
   PAD_MODE: 'reflect'
   ACT_MODE: 'elu'
   NORM_MODE: 'gn'
-  UPSAMPLE_INTERP: True #whether use linear_interpolation to upsample 
+  UPSAMPLE_INTERP: False #whether use linear_interpolation to upsample 
 LOSS:
   #####for reconstruntion loss
   name: mse
