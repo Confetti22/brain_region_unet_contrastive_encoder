@@ -62,16 +62,17 @@ def unnormalize(img):
 
 class Trainer:
 
-    def __init__(self, args, loader, model, loss, optimizer):
+    def __init__(self, args, cfg, loader, model, loss, optimizer):
 
         self.args = args
+        self.cfg = cfg
         self.train_gen = loader
         self.model = model
         self.loss = loss
         self.optimizer = optimizer
-        self.fp16_scaler = torch.GradScaler('cuda') if args.fp16 else None
+        self.fp16_scaler = torch.GradScaler('cuda') if cfg.TRAINER.fp16 else None
 
-        self.recon_img_dir = "{}/recon_img/{}".format(args.out, args.model)
+        self.recon_img_dir = "{}/recon_img/{}".format(cfg.OUT, cfg.EXP_NAME)
         os.makedirs(self.recon_img_dir,exist_ok=True)
 
         # === TB writers === #
@@ -89,7 +90,7 @@ class Trainer:
 
 
         metric_logger = MetricLogger(delimiter="  ")
-        header = 'Epoch: [{}/{}]'.format(epoch, self.args.epochs)
+        header = 'Epoch: [{}/{}]'.format(epoch, self.cfg.TRAINER.epoch)
 
         for it, (input_data, labels) in enumerate(metric_logger.log_every(self.train_gen, 10, header)):
 
@@ -103,13 +104,13 @@ class Trainer:
             input_data, labels = input_data.cuda(non_blocking=True), labels.cuda(non_blocking=True)
 
             # === Forward pass === #
-            with torch.autocast('cuda',self.args.fp16):
+            if self.cfg.TRAINER.fp16:
+                train_type=torch.float16
+            else:
+                train_type = torch.float32
+            with torch.autocast('cuda',dtype=train_type):
                 preds = self.model(input_data)
-                unnormed_input= unnormalize(input_data)
-                if MSE_loss: 
-                    loss = self.loss(preds,unnormed_input)
-                else :
-                    loss = self.loss(preds, input_data)
+                loss = self.loss(preds, input_data)
 
             # Sanity Check
             if not math.isfinite(loss.item()):
@@ -119,10 +120,10 @@ class Trainer:
             # === Backward pass === #
             self.model.zero_grad()
             # for mix precision backward propogation
-            # if self.args.fp16:
-            #     self.fp16_scaler.scale(loss).backward()
-            #     self.fp16_scaler.step(self.optimizer)
-            #     self.fp16_scaler.update()
+            if self.cfg.TRAINER.fp16:
+                self.fp16_scaler.scale(loss).backward()
+                self.fp16_scaler.step(self.optimizer)
+                self.fp16_scaler.update()
             
             loss.backward()
             self.optimizer.step()
@@ -136,16 +137,13 @@ class Trainer:
                 preds = preds.detach().cpu().numpy()
                 preds = np.squeeze(preds)
 
-
                 input_data = input_data.detach().cpu().numpy()
                 input_data = np.squeeze(input_data)
                 
-                unnormed_input = unnormed_input.detach().cpu().numpy()
-                unnormed_input = np.squeeze(unnormed_input)
 
-                num=unnormed_input.shape[0]
+                num=input_data.shape[0]
                 for id in [0,1]:
-                    x = unnormed_input[id]
+                    x = input_data[id]
                     re_x = preds[id]
 
                     x_name = f"{epoch:04d}_{id}_x.tif"
@@ -177,16 +175,17 @@ class Trainer:
         self.load_if_available()
 
         # === Schedules === #
-        lr_schedule = cosine_scheduler(
-                        base_value = self.args.lr_start * (self.args.batch_per_gpu * self.args.world_size) / 256.,
+        if self.cfg.SOLVER.LR_SCHEDULER_NAME =='cosine':
+            lr_schedule = cosine_scheduler(
+                        base_value = self.args.lr_start * (self.cfg.DATASET.batch_per_gpu * self.args.world_size) / 256.,
                         final_value = self.args.lr_end,
-                        epochs = self.args.epochs,
+                        epochs = self.cfg.TRAINER.epoch,
                         niter_per_ep = len(self.train_gen),
                         warmup_epochs= self.args.lr_warmup,
-        )
+                        )           
 
         # === training loop === #
-        for epoch in range(self.start_epoch, self.args.epochs):
+        for epoch in range(self.start_epoch, self.cfg.TRAINER.epoch):
 
             self.train_gen.sampler.set_epoch(epoch)
 
@@ -195,7 +194,7 @@ class Trainer:
 
 
             # === save model === #
-            if self.args.main and (epoch+1)%self.args.save_every == 0:
+            if self.args.main and (epoch+1)%self.cfg.TRAINER.save_every == 0:
                 self.save(epoch)
 
     def load_if_available(self):
@@ -211,7 +210,7 @@ class Trainer:
             self.start_epoch = ckpt['epoch']
             self.model.load_state_dict(ckpt['model'])
             self.optimizer.load_state_dict(ckpt['optimizer'])
-            if self.args.fp16: self.fp16_scaler.load_state_dict(ckpt['fp16_scaler'])
+            if self.cfg.TRAINER.fp16: self.fp16_scaler.load_state_dict(ckpt['fp16_scaler'])
             print("Loaded ckpt: ", ckpts[-1])
 
         else:
@@ -221,7 +220,7 @@ class Trainer:
 
     def save(self, epoch):
 
-        if self.args.fp16:
+        if self.cfg.TRAINER.fp16:
             state = dict(epoch=epoch+1, 
                             model=self.model.state_dict(), 
                             optimizer=self.optimizer.state_dict(), 

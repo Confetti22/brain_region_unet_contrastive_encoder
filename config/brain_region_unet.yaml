@@ -1,52 +1,50 @@
-# learn dense 3d image embedding with V-net
+
+EXP_NAME : "test_singleconv_trilinearUpsample_unnorm_mse" #EXP_NAME used to distinguish each run
+OUT: "out" #path to output directory
 SYSTEM:
+  e5: False #control dataset_path to use on cluster or loacl
   DEVICE: cuda
   GPU_IDS: 0
   NUM_GPUS: 1
   NUM_CPUS: 2
 MODEL:
-  train_mode: False 
   INPUT_SIZE: [ 128, 128, 128 ]
-  ARCHITECTURE: autoencoder_s 
-  BLOCK_TYPE: residual
+  ARCHITECTURE: autoencoder
+  BLOCK_TYPE: single 
   FILTERS: [32,64,96,112,128]
-  ISOTROPY: [True,True,True,True,True]
-  # output dense featuremap of dimension 64 
   IN_PLANES: 1
   OUT_PLANES: 1 
+  PAD_MODE: 'reflect'
+  ACT_MODE: 'elu'
   NORM_MODE: 'gn'
-  TARGET_OPT: ["e"]
-  POOLING_LAYER: True 
-  LOSS_OPTION:
-    [[ "DiscriminativeLoss", "ConnectionLoss" ]]
-  LOSS_WEIGHT: [[ 0.2, 1.0 ]]
-  WEIGHT_OPT: [[ "0", "0" ]]
-  OUTPUT_ACT: [[ "none",  "none" ]]
-MONITOR:
-  ITERATION_NUM: [20, 200]
+  UPSAMPLE_INTERP: True #whether use linear_interpolation to upsample 
 LOSS:
+  #####for reconstruntion loss
+  name: mse
+  #####for contrastive loss, not used yet
   n_views: 2
   temperature: 0.07
+TRAINER:
+  name: 'trainer' #Trainer to choose
+  save_every: 50 #save frequency
+  epoch: 5000
+  fp16: False 
 SOLVER:
-  LR_SCHEDULER_NAME: "MultiStepLR"
-  NAME: AdamW
-  ITERATION_RESTART: True
-  BASE_LR: 2e-04
-  STEPS: (30000, 60000)
-  ITERATION_SAVE: 200
-  ITERATION_TOTAL: 55000
-  ITERATION_VAL: 200
-  SAMPLES_PER_BATCH: 1 # PER GPU
+  LR_SCHEDULER_NAME: "cosine"
+  NAME: "adam"
+  LR_START: 5e-4
+  LR_END: 1e-6
+  WEIGHT_DECAY: 0.0
+  LR_WARMUP: 10
 DATASET:
-  batch_per_gpu: 16
+  name: 'visor_3d_dataset'
+  batch_per_gpu: 8
   num_workers: 0
   shuffle: True
   ######for fixed dataset######
   data_path_dir: "/home/confetti/mnt/data/processed/t1779/100roi"
-  # data_path_dir: "/share/home/shiqiz/data/t1779/100roi"
-  clip_low : 96
-  clip_high : 2672
-  ######for random generated dataset######
+  e5_data_path_dir: "/share/home/shiqiz/data/t1779/100roi"
+  ######for random generated dataset, not used here ######
   amount: 1000   #total amount of training data , only valid for radom_generated dataset
   raw_internal_path: "/home/confetti/data/mousebrainatlas/T11.ims.h5" 
   label_internal_path: "/home/confetti/data/mousebrainatlas/new_t11/registered_atlas.tiff"
@@ -57,38 +55,13 @@ DATASET:
   zoom_factor: 6.25
   input_size: [128,128,128]
   IS_ISOTROPIC: True 
-  RELABEL: False
-  SNEMI3D_DATSET: True
-  CONNECTOR_DATSET: True
-  OUTPUT_PATH: 'out' 
-  DO_MULTI_VOLUME: False
-INFERENCE:
-  OUTPUT_ACT: ["none"]
-  SAMPLES_PER_BATCH: 1 # per gpu
-  INPUT_PATH: /h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/positives/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D-examples.h5#/h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/negatives/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D-examples.h5
-  OUTPUT_PATH: /h3cstore_nt/JaneChen/SNEMI3D/image_feature_patch/connect-embed/train
-  IMAGE_NAME: /h3cstore_nt/JaneChen/SNEMI3D/edges-0nm-8x64x64/training/SNEMI3D-train-segmentation-wos-reduced-nodes-0-17x129x129-SNEMI3D.csv
-AUGMENTOR:
-  SMOOTH: False
-  MISSINGPARTS:
-    ENABLED: False
-  MISSINGSECTION:
-    ENABLED: False
-  CUTNOISE:
-    ENABLED: False
-  CUTBLUR:
-    ENABLED: False
-  ROTATE:
-    ENABLED: False
-  RESCALE:
-    ENABLED: False
-  FLIP:
-    ENABLED: True
-  ELASTIC:
-    ENABLED: False
-  GRAYSCALE:
-    ENABLED: True
-  MISALIGNMENT:
-    ENABLED: False
-  MOTIONBLUR:
-    ENABLED: False
+PREPROCESS:
+  # only when NORM is True, NORM_MODE will func
+  NORM: False 
+  NORM_MODE: "min_max"
+  # used to clip the data
+  # for 100roi dataset, 96 is the global_min value, 2672 is the 99 percentile global_high value, to exclude some extra high value in data
+  clip_low : 96 
+  clip_high : 2672
+
+

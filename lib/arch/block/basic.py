@@ -1,5 +1,5 @@
 from __future__ import print_function, division
-from typing import Optional, List
+from typing import Optional, List,Union
 
 import torch
 import torch.nn as nn
@@ -26,10 +26,15 @@ def conv2d_norm_act(in_planes, planes, kernel_size=(3, 3), stride=1, groups=1,
 
 def conv3d_norm_act(in_planes, planes, kernel_size=(3, 3, 3), stride=1, groups=1,
                     dilation=(1, 1, 1), padding=(1, 1, 1), bias=True, pad_mode='replicate',
-                    norm_mode='bn', act_mode='relu', return_list=False):
+                    norm_mode='bn', act_mode='relu', trans= False,return_list=False):
+    if trans:
+        Conv = nn.ConvTranspose3d
+        pad_mode='zeros'
+    else:
+        Conv = nn.Conv3d
 
     layers = []
-    layers += [nn.Conv3d(in_planes, planes, kernel_size=kernel_size, stride=stride,
+    layers += [Conv(in_planes, planes, kernel_size=kernel_size, stride=stride,
                          groups=groups, padding=padding, padding_mode=pad_mode,
                          dilation=dilation, bias=bias)]
     layers += [get_norm_3d(norm_mode, planes)]
@@ -73,6 +78,55 @@ def norm_act_conv3d(in_planes, planes, kernel_size=(3, 3, 3), stride=1, groups=1
 
     return nn.Sequential(*layers)
 
+
+class SingleConv3d(nn.Module):
+    def __init__(self,
+                 in_planes: int,
+                 planes: int,
+                 stride: Union[int, tuple] = 1,
+                 kernel_size : int =3 ,
+                 padding : int = 1,
+                 dilation: int = 1,
+                 groups: int = 1,
+                 pad_mode: str = 'replicate',
+                 act_mode: str = 'elu',
+                 norm_mode: str = 'bn',
+                 ):
+        super(SingleConv3d, self).__init__()
+        self.conv = conv3d_norm_act(in_planes, planes, kernel_size=kernel_size, dilation=dilation,
+                            stride=stride, groups=groups, padding=padding,
+                            pad_mode=pad_mode, norm_mode=norm_mode, act_mode=act_mode)
+
+    def forward(self, x):
+        y = self.conv(x)
+        return y
+
+
+class DoubleConv3d(nn.Module):
+    def __init__(self,
+                 in_planes: int,
+                 planes: int,
+                 kernel_size : int = 3,
+                 padding : int = 1,
+                 dilation: int = 1,
+                 groups: int = 1,
+                 pad_mode: str = 'replicate',
+                 act_mode: str = 'elu',
+                 norm_mode: str = 'bn',
+                 ):
+        super(DoubleConv3d, self).__init__()
+        self.conv = nn.Sequential(
+            conv3d_norm_act(planes, planes, kernel_size=kernel_size, dilation=dilation,
+                            stride= 1, groups=groups, padding=padding,
+                            pad_mode=pad_mode, norm_mode=norm_mode, act_mode=act_mode),
+            conv3d_norm_act(planes, planes, kernel_size=kernel_size, dilation=dilation,
+                            stride= 1, groups=groups, padding=padding,
+                            pad_mode=pad_mode, norm_mode=norm_mode, act_mode=act_mode)
+        )
+
+    def forward(self, x):
+        y = self.conv(x)
+        return y
 
 # ---------------------------
 # Partial Convolution Layers

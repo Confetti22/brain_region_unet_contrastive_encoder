@@ -18,15 +18,21 @@ class T11_Dataset(Dataset):
         """
         
         #filepath,trans,evalue_img=None,evalue_mode=False,amount=0.5
+        self.e5 = cfg.SYSTEM.e5
         self.data_cfg=cfg.DATASET
         self.input_shape=self.data_cfg.input_size
         self.data_path = self.data_cfg.data_path_dir
+        self.e5_data_path = self.data_cfg.e5_data_path_dir
         self.clip_low = self.data_cfg.clip_low
         self.clip_high = self.data_cfg.clip_high
+        self.is_norm = cfg.PREPROCESS.NORM
         #totoal data amount used for training
 
         print(f"######init visor_3d_dataset#####")
-        self.files = [os.path.join(self.data_path,fname) for fname in os.listdir(self.data_path) if fname.endswith('.tif')] 
+        if self.e5:
+            self.files = [os.path.join(self.e5_data_path,fname) for fname in os.listdir(self.e5_data_path) if fname.endswith('.tif')] 
+        else:
+            self.files = [os.path.join(self.data_path,fname) for fname in os.listdir(self.data_path) if fname.endswith('.tif')] 
 
 
 
@@ -45,16 +51,19 @@ class T11_Dataset(Dataset):
         """
         roi = tif.imread(self.files[idx])
         roi = np.array(roi).astype(np.float32) 
- 
-        roi=self.preprocess(roi,clip_low=self.clip_low,clip_high=self.clip_high)
-        roi=self.transform(roi)
+
+        if self.is_norm:
+            roi = self.clip_norm(roi,clip_low=self.clip_low,clip_high=self.clip_high)
+        else:
+            roi =self.clip(roi,clip_low=self.clip_low,clip_high=self.clip_high)
+        roi=self.tran2tensor(roi)
         roi=torch.unsqueeze(roi,0)
 
         return roi, 1
     
 
     @staticmethod
-    def preprocess(img,clip_low = 0 ,clip_high=3000):
+    def clip_norm(img,clip_low = 0 ,clip_high=3000):
         """
         first clip the image to percentiles [clip_low, clip_high]
         second min_max normalize the image to [0,1]
@@ -64,15 +73,24 @@ class T11_Dataset(Dataset):
         clipped_arr = np.clip(img,clip_low,clip_high) 
         min_value = clip_low 
         max_value = clip_high 
- 
+
         img = (clipped_arr-min_value)/(max_value-min_value)
 
         img = img.astype(np.float32)
 
         return img
+    
+    @staticmethod
+    def clip(img,clip_low = 0 ,clip_high=3000):
+        """
+        clip the image to percentiles [clip_low, clip_high]
+        """
+        img = np.clip(img,clip_low,clip_high) 
+        img = img.astype(np.float32)
+        return img
 
     @staticmethod 
-    def transform(img):
+    def tran2tensor(img):
         #using no augmentation at all
         trans=v2.Compose(
             [

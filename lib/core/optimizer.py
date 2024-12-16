@@ -1,11 +1,11 @@
 import torch.optim as Opt
 
-def get_optimizer(model, args):
+def get_optimizer(model, solver):
 
     opt_fns = {
-        'adam': Opt.Adam(model.parameters(), lr = args.lr_start,weight_decay=1e-4),
-        'sgd': Opt.SGD(model.parameters(), lr = args.lr_start,weight_decay=1e-4),
-        'adagrad': Opt.Adagrad(model.parameters(), lr = args.lr_start,weight_decay=1e-4)
+        'adam': Opt.Adam(model.parameters(), lr = solver.LR_START,weight_decay=solver.WEIGHT_DECAY),
+        'sgd': Opt.SGD(model.parameters(), lr = solver.LR_START,weight_decay=solver.WEIGHT_DECAY),
+        'adagrad': Opt.Adagrad(model.parameters(), lr = solver.LR_START,weight_decay=solver.WEIGHT_DECAY)
     }
 
-    return opt_fns.get(args.optimizer, "Invalid Optimizer")
+    return opt_fns.get(solver.NAME, "Invalid Optimizer")

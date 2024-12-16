@@ -26,11 +26,6 @@ def get_writer(args):
 
     writer = SummaryWriter(path)
 
-    if os.path.exists("{}/{}/tables.csv".format(args.data, args.dataset)):
-        table = pd.read_csv("{}/{}/tables.csv".format(args.data, args.dataset)).fillna(" ")
-        table.set_index(args.dataset, inplace=True)
-        writer.add_text("Performance", table.to_markdown(), global_step=0)
-
     writer.add_text('config', re.sub("\n", "  \n", pprint.pformat(args, width = 1)), 0)
     writer.flush()
 

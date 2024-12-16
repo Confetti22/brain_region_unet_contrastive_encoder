@@ -1,13 +1,10 @@
 python train_brain_region_constrative_slurm.py  \
                         -gpus 0 \
-                        -model 'teset_recon_smallnet_mse_loss_wo_reg' \
-                        -batch_per_gpu 48 \
-                        -epochs 10000 \
                         -save_every 50 \
                         -cfg 'config/brain_region_unet.yaml' \
                         -out out \
                         -slurm \
                         -slurm_ngpus 1 \
                         -slurm_nnodes 1 \
-                        -slurm_nodelist c001 \
+                        -slurm_nodelist c003 \
                         -slurm_partition compute \
